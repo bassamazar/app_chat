@@ -25,6 +25,9 @@ model User {
   sessions     Session[]
   participants Participant[]
   messages     Message[]
+
+  blocks       Block[]       @relation("Blocking")
+  blockedBy    Block[]       @relation("BlockedBy")
 }
 
 model Session {
@@ -87,4 +90,17 @@ model Message {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, createdAt(sort: Desc)])
+}
+
+
+model Block {
+  id           String   @id @default(uuid())
+  blockerId    String   // الشخص اللي عمل الحظر
+  blockedId    String   // الشخص المحظور
+  createdAt    DateTime @default(now())
+
+  blocker      User     @relation("Blocking", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked      User     @relation("BlockedBy", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
 }

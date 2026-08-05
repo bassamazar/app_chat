@@ -14,6 +14,10 @@ export default function ChatPage() {
   const [groups, setGroups] = useState<any[]>([]); 
   const [friendRequests, setFriendRequests] = useState<any[]>([]);
   const [sentRequests, setSentRequests] = useState<any[]>([]);
+  
+  const [blockedByMe, setBlockedByMe] = useState<string[]>([]); 
+  const [hiddenUsers, setHiddenUsers] = useState<string[]>([]); 
+
   const [messages, setMessages] = useState<any[]>([]);
   const [activeChat, setActiveChat] = useState<any>(null); 
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -47,6 +51,7 @@ export default function ChatPage() {
     fetchGroups(); 
     fetchFriendRequests();
     fetchSentRequests(); 
+    fetchBlockedUsers();
 
     socket.auth = { userId: currentUser.id };
     socket.connect();
@@ -64,8 +69,17 @@ export default function ChatPage() {
     socket.on('receive_message', (newMsg: any) => {
       if (newMsg.conversationId === conversationId) {
         setMessages((prev) => {
+          // 1. منع التكرار: إذا الرسالة وصلتنا بنفس الـ ID الأصلي، نتجاهلها
           if (prev.some((msg) => msg.id === newMsg.id)) return prev;
-          return [...prev, newMsg];
+          
+          // 2. إزالة الرسالة المؤقتة اللي عرضناها قبل شوي عشان ما تتكرر الشوفة
+          const filtered = prev.filter(msg => {
+            const isTemp = String(msg.id).startsWith('temp-');
+            const isMatch = isTemp && msg.content === newMsg.content && msg.senderId === newMsg.senderId;
+            return !isMatch; // نحذفها إذا تطابقت مع الرسالة الوهمية
+          });
+          
+          return [...filtered, newMsg];
         });
       } else {
         setFriends((prev) => prev.map(f => f.id === newMsg.senderId ? { ...f, hasUnread: true } : f));
@@ -121,6 +135,26 @@ export default function ChatPage() {
     }
   };
 
+  const fetchBlockedUsers = async () => {
+    try {
+      const res = await axiosClient.get('/blocks');
+      setBlockedByMe(res.data.blockedByMe || []);
+      setHiddenUsers(res.data.allHidden || []);
+    } catch (error) {
+      console.error('Error fetching blocked users:', error);
+    }
+  };
+
+  const handleToggleBlock = async (targetUserId: string) => {
+    try {
+      const res = await axiosClient.post('/blocks/toggle', { targetUserId });
+      fetchBlockedUsers(); 
+      alert(res.data.message);
+    } catch (error: any) {
+      alert(error.response?.data?.message || 'Error blocking user');
+    }
+  };
+
   const fetchMessages = async (chat: any) => {
     try {
       const convId = chat.conversationId;
@@ -159,6 +193,9 @@ export default function ChatPage() {
       senderId: currentUser.id,
       content: message
     };
+
+    // 🆕 عرض الرسالة فوراً محلياً بـ ID مؤقت عشان تحس بالسرعة وما تستنى السيرفر
+    setMessages((prev) => [...prev, { ...msgData, id: `temp-${Date.now()}` }]);
 
     socket.emit('send_message', msgData);
     setMessage('');
@@ -401,6 +438,18 @@ export default function ChatPage() {
 
           <div style={{ display: 'flex', gap: '10px', position: 'relative' }}>
             
+            {activeChat && !activeChat.isGroup && (
+              <button 
+                onClick={() => handleToggleBlock(activeChat.id)}
+                style={{ 
+                  backgroundColor: blockedByMe.includes(activeChat.id) ? '#28a745' : '#dc3545', 
+                  color: 'white', border: 'none', borderRadius: '4px', padding: '6px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 'bold' 
+                }}
+              >
+                {blockedByMe.includes(activeChat.id) ? 'Unblock' : 'Block'}
+              </button>
+            )}
+
             {activeChat && activeChat.isGroup && (
               <button 
                 onClick={() => setShowGroupSettings(!showGroupSettings)}
@@ -412,13 +461,13 @@ export default function ChatPage() {
             )}
 
             {showGroupSettings && activeChat && activeChat.isGroup && (
-              <div style={{ position: 'absolute', top: '50px', right: '50px', zIndex: 10, backgroundColor: 'white', padding: '15px', borderRadius: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.15)', width: '300px' }}>
+              <div style={{ position: 'absolute', top: '50px', right: '50px', zIndex: 10, backgroundColor: 'white', padding: '15px', borderRadius: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.15)', width: '310px' }}>
                 <h4 style={{ margin: '0 0 10px 0', borderBottom: '1px solid #eee', paddingBottom: '5px' }}>Group Members</h4>
                 
-                <div style={{ maxHeight: '150px', overflowY: 'auto', marginBottom: '15px' }}>
+                <div style={{ maxHeight: '160px', overflowY: 'auto', marginBottom: '15px' }}>
                   {activeChat.participants?.map((p: any) => {
-                    // تحقق هل الشخص صديق عندك أم لا (مقارنة مع قائمة الأصدقاء الحالية)
                     const isFriend = friends.some(f => f.id === p.id) || p.id === currentUser.id;
+                    const isBlocked = blockedByMe.includes(p.id);
 
                     return (
                       <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
@@ -429,9 +478,17 @@ export default function ChatPage() {
                           {p.role === 'ADMIN' && <span style={{ fontSize: '9px', backgroundColor: '#ffd700', padding: '1px 4px', borderRadius: '4px' }}>ADMIN</span>}
                         </div>
 
-                        <div style={{ display: 'flex', gap: '5px' }}>
-                          {/* 🆕 زر إضافة صديق مباشر إذا لم يكن صديقك */}
-                          {!isFriend && (
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          {p.id !== currentUser.id && (
+                            <button 
+                              onClick={() => handleToggleBlock(p.id)} 
+                              style={{ background: isBlocked ? '#28a745' : '#6c757d', color: 'white', border: 'none', borderRadius: '4px', padding: '2px 6px', fontSize: '11px', cursor: 'pointer' }}
+                            >
+                              {isBlocked ? 'Unblock' : 'Block'}
+                            </button>
+                          )}
+
+                          {!isFriend && p.id !== currentUser.id && (
                             <button 
                               onClick={() => handleAddFriend(p.username)} 
                               style={{ background: '#007bff', color: 'white', border: 'none', borderRadius: '4px', padding: '2px 6px', fontSize: '11px', cursor: 'pointer' }}
@@ -440,7 +497,6 @@ export default function ChatPage() {
                             </button>
                           )}
 
-                          {/* زر إزالة العضو */}
                           {(activeChat.participants.find((u: any) => u.id === currentUser.id)?.role === 'ADMIN' || p.id === currentUser.id) && p.role !== 'ADMIN' && (
                             <button onClick={() => handleRemoveMemberFromGroup(p.id)} style={{ background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', padding: '2px 6px', fontSize: '11px', cursor: 'pointer' }}>
                               Remove
@@ -539,7 +595,6 @@ export default function ChatPage() {
           ) : (
             messages.map((msg, index) => {
               const contentText = msg.content || msg.text || '';
-              // 🆕 معالجة رسائل النظام (لو الرسالة تبدأ بـ system:)
               const isSystemMessage = contentText.startsWith('system:');
 
               if (isSystemMessage) {
@@ -547,6 +602,18 @@ export default function ChatPage() {
                   <div key={msg.id || index} style={{ display: 'flex', justifyContent: 'center', margin: '10px 0' }}>
                     <span style={{ backgroundColor: '#e2e8f0', color: '#4a5568', fontSize: '12px', padding: '4px 12px', borderRadius: '10px', textAlign: 'center' }}>
                       {contentText.replace('system:', '')}
+                    </span>
+                  </div>
+                );
+              }
+
+              const isBlocked = hiddenUsers.includes(msg.senderId);
+
+              if (isBlocked) {
+                return (
+                  <div key={msg.id || index} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0' }}>
+                    <span style={{ fontSize: '11px', color: '#666', fontStyle: 'italic', backgroundColor: '#f1f1f1', padding: '3px 10px', borderRadius: '6px', border: '1px solid #ddd' }}>
+                      ⚠️ Message hidden due to a block between users.
                     </span>
                   </div>
                 );
@@ -587,15 +654,34 @@ export default function ChatPage() {
           <div style={{ padding: '15px', backgroundColor: '#f0f0f0', display: 'flex', gap: '10px', borderTop: '1px solid #ddd' }}>
             <input 
               type="text" 
-              placeholder="Type a message..." 
+              placeholder={!activeChat.isGroup && blockedByMe.includes(activeChat.id) ? "You blocked this user. Cannot send messages." : "Type a message..."} 
+              disabled={!activeChat.isGroup && blockedByMe.includes(activeChat.id)}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-              style={{ flex: 1, padding: '12px', borderRadius: '25px', border: '1px solid #ccc', outline: 'none' }}
+              style={{ 
+                flex: 1, 
+                padding: '12px', 
+                borderRadius: '25px', 
+                border: '1px solid #ccc', 
+                outline: 'none',
+                backgroundColor: !activeChat.isGroup && blockedByMe.includes(activeChat.id) ? '#e9ecef' : 'white',
+                cursor: !activeChat.isGroup && blockedByMe.includes(activeChat.id) ? 'not-allowed' : 'text',
+                color: '#000' // 👈👈 السر هون: فرضنا اللون الأسود عشان ما يختفي الخط
+              }}
             />
             <button 
               onClick={handleSendMessage}
-              style={{ padding: '0 25px', borderRadius: '25px', border: 'none', backgroundColor: '#007bff', color: 'white', fontWeight: 'bold', cursor: 'pointer' }}
+              disabled={!activeChat.isGroup && blockedByMe.includes(activeChat.id)}
+              style={{ 
+                padding: '0 25px', 
+                borderRadius: '25px', 
+                border: 'none', 
+                backgroundColor: !activeChat.isGroup && blockedByMe.includes(activeChat.id) ? '#ccc' : '#007bff', 
+                color: 'white', 
+                fontWeight: 'bold', 
+                cursor: !activeChat.isGroup && blockedByMe.includes(activeChat.id) ? 'not-allowed' : 'pointer' 
+              }}
             >
               Send
             </button>
