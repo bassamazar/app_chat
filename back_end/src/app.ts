@@ -5,6 +5,7 @@ import chatRoutes from './routes/chat.routes';
 import friendRoutes from './routes/friend.routes';
 import groupRoutes from './routes/group.routes';
 import blockRoutes from './routes/block.routes';
+import uploadRoutes from './routes/upload.routes';
 import { setupSwagger } from './config/swagger';
 
 const app = express();
@@ -18,6 +19,7 @@ app.use('/api/chats', chatRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/blocks', blockRoutes);
+app.use('/api/upload', uploadRoutes);
 setupSwagger(app);
 
 app.get('/', (req, res) => {

@@ -10,7 +10,15 @@ export const registerChatEvents = (io: Server, socket: Socket) => {
   });
 
   // استقبال الرسالة وحفظها وبثها
-  socket.on('send_message', async (data: { senderId: string; conversationId: string; content: string }) => {
+  // 🆕 تم تعديل الـ data عشان تستقبل نوع الرسالة وروابط الملفات
+  socket.on('send_message', async (data: { 
+    senderId: string; 
+    conversationId: string; 
+    content?: string; 
+    type?: 'TEXT' | 'IMAGE' | 'AUDIO' | 'FILE'; 
+    fileUrl?: string; 
+    fileName?: string;
+  }) => {
     try {
       // 1. جلب المحادثة لمعرفة هل هي قروب أم محادثة فردية (Direct Chat)
       const conversation = await prisma.conversation.findUnique({
@@ -44,7 +52,10 @@ export const registerChatEvents = (io: Server, socket: Socket) => {
               id: `fake-${Date.now()}`, // آي دي وهمي عشان الواجهة ما تضرب
               senderId: data.senderId,
               conversationId: data.conversationId,
-              content: data.content,
+              content: data.content || null,
+              type: data.type || 'TEXT', // 🆕 إضافة نوع الرسالة الوهمية
+              fileUrl: data.fileUrl || null, // 🆕 إضافة رابط الملف
+              fileName: data.fileName || null, // 🆕 إضافة اسم الملف
               createdAt: new Date()
             });
             return; // نوقف الشغل هون وما نكمل حفظ
@@ -53,10 +64,14 @@ export const registerChatEvents = (io: Server, socket: Socket) => {
       }
 
       // 3. حفظ الرسالة في قاعدة البيانات (بما أنه لا يوجد حظر يمنع ذلك)
+      // 🆕 تمرير البيانات الجديدة لدالة الحفظ
       const savedMessage = await messageService.createMessage(
         data.senderId,
         data.conversationId,
-        data.content
+        data.content,
+        data.type || 'TEXT',
+        data.fileUrl,
+        data.fileName
       );
 
       // 4. بث الرسالة لكل المتواجدين في نفس المحادثة

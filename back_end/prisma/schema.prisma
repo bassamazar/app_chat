@@ -78,9 +78,19 @@ model Participant {
   @@unique([userId, conversationId])
 }
 
+enum MessageType {
+  TEXT
+  IMAGE
+  AUDIO
+  FILE
+}
+
 model Message {
   id             String       @id @default(uuid())
-  content        String       @db.Text
+  content        String?
+  type           MessageType  @default(TEXT)
+  fileUrl        String?      
+  fileName       String?      
   senderId       String
   conversationId String
   createdAt      DateTime     @default(now())

@@ -1,18 +1,28 @@
 import prisma from '../config/db';
 
-export const createMessage = async (senderId: string, conversationId: string, content: string) => {
+export const createMessage = async (
+  senderId: string,
+  conversationId: string,
+  content?: string | null, // 👈 هون حلينا الإيرور
+  type: 'TEXT' | 'IMAGE' | 'AUDIO' | 'FILE' = 'TEXT',
+  fileUrl?: string | null,
+  fileName?: string | null
+) => {
   return await prisma.message.create({
     data: {
       senderId,
       conversationId,
-      content,
+      content: content || null, // عشان لو مافي نص يخزنه null بدل ما يعطي إيرور
+      type,
+      fileUrl: fileUrl || null,
+      fileName: fileName || null,
     },
     include: {
       sender: {
         select: {
           id: true,
           username: true,
-          avatarUrl: true,
+          avatarUrl: true, // 👈 رجعنالك إياها زي ما كانت بكودك
         },
       },
     },
