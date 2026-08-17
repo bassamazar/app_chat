@@ -1,6 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import * as messageService from '../services/message.service';
 import prisma from '../config/db';
+import axios from 'axios'; // 🆕 استدعاء أكسيوس للتواصل مع سيرفر بايثون
 
 export const registerChatEvents = (io: Server, socket: Socket) => {
   // الانضمام إلى محادثة معينة (غرفة)
@@ -10,7 +11,6 @@ export const registerChatEvents = (io: Server, socket: Socket) => {
   });
 
   // استقبال الرسالة وحفظها وبثها
-  // 🆕 تم تعديل الـ data عشان تستقبل نوع الرسالة وروابط الملفات
   socket.on('send_message', async (data: { 
     senderId: string; 
     conversationId: string; 
@@ -46,25 +46,24 @@ export const registerChatEvents = (io: Server, socket: Socket) => {
           });
 
           if (isBlocked) {
-            // 🛑 إذا كان هناك حظر بالشات الفردي (زي جميل):
-            // نبعث الرسالة الوهمية لجميل لحاله عشان ما يشك، وبدون ما نحفظها بالداتابيس ولا نبعثها للطرف الثاني!
+            // 🛑 إذا كان هناك حظر بالشات الفردي:
+            // نبعث الرسالة الوهمية لحاله عشان ما يشك، وبدون ما نحفظها بالداتابيس ولا نبعثها للطرف الثاني!
             socket.emit('receive_message', {
-              id: `fake-${Date.now()}`, // آي دي وهمي عشان الواجهة ما تضرب
+              id: `fake-${Date.now()}`,
               senderId: data.senderId,
               conversationId: data.conversationId,
               content: data.content || null,
-              type: data.type || 'TEXT', // 🆕 إضافة نوع الرسالة الوهمية
-              fileUrl: data.fileUrl || null, // 🆕 إضافة رابط الملف
-              fileName: data.fileName || null, // 🆕 إضافة اسم الملف
+              type: data.type || 'TEXT',
+              fileUrl: data.fileUrl || null,
+              fileName: data.fileName || null,
               createdAt: new Date()
             });
-            return; // نوقف الشغل هون وما نكمل حفظ
+            return;
           }
         }
       }
 
-      // 3. حفظ الرسالة في قاعدة البيانات (بما أنه لا يوجد حظر يمنع ذلك)
-      // 🆕 تمرير البيانات الجديدة لدالة الحفظ
+      // 3. حفظ الرسالة في قاعدة البيانات
       const savedMessage = await messageService.createMessage(
         data.senderId,
         data.conversationId,
@@ -77,6 +76,52 @@ export const registerChatEvents = (io: Server, socket: Socket) => {
       // 4. بث الرسالة لكل المتواجدين في نفس المحادثة
       io.to(data.conversationId).emit('receive_message', savedMessage);
       
+      // ==========================================
+      // 🤖 5. الربط مع سيرفر الذكاء الاصطناعي (Python)
+      // ==========================================
+      const messageText = data.content?.trim() || '';
+      
+      // فحص إذا كانت الرسالة نصية وتبدأ بكلمة @bot
+      if ((data.type === 'TEXT' || !data.type) && messageText.startsWith('@bot ')) {
+        const userQuery = messageText.replace('@bot ', ''); // تنظيف النص وإزالة كلمة @bot
+        
+        try {
+          // إرسال النص لسيرفر البايثون اللي شغال على بورت 8000
+          const aiResponse = await axios.post('http://127.0.0.1:8000/api/chat', {
+            message: userQuery
+          });
+          
+          const botReply = aiResponse.data.reply;
+
+          // إنشاء رسالة البوت وبثها كرسالة نظام (System Message)
+          const botMessage = {
+            id: `bot-${Date.now()}`,
+            senderId: 'system',
+            conversationId: data.conversationId,
+            content: `system:🤖 ${botReply}`, // الـ UI مبرمج يعرض أي شي ببلش بـ system: بالنص
+            type: 'TEXT',
+            createdAt: new Date()
+          };
+
+          // بث رسالة البوت للشات بدون حفظها بالداتابيس (كأنها رسالة عابرة)
+          io.to(data.conversationId).emit('receive_message', botMessage);
+
+        } catch (aiError) {
+          console.error('Error connecting to AI Python Server:', aiError);
+          // في حال كان سيرفر البايثون طافي أو فيه مشكلة
+          const errorMsg = {
+            id: `bot-err-${Date.now()}`,
+            senderId: 'system',
+            conversationId: data.conversationId,
+            content: `system:❌ عذراً، خادم الذكاء الاصطناعي غير متصل حالياً.`,
+            type: 'TEXT',
+            createdAt: new Date()
+          };
+          io.to(data.conversationId).emit('receive_message', errorMsg);
+        }
+      }
+      // ==========================================
+
     } catch (error: any) {
       console.error('Error saving message via socket:', error.message);
       socket.emit('error', { message: 'Failed to send message' });

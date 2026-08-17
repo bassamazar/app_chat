@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axiosClient from '../api/axiosClient';
 import { socket } from '../services/socket';
+import ReactMarkdown from 'react-markdown';
 
 export default function ChatPage() {
   const navigate = useNavigate();
@@ -39,12 +40,19 @@ export default function ChatPage() {
 
   const [showGroupSettings, setShowGroupSettings] = useState(false);
 
-  // 🆕 متغيرات رفع الملفات وتسجيل الصوت
+  // متغيرات رفع الملفات وتسجيل الصوت
   const [isUploading, setIsUploading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  // 🤖 🆕 متغيرات ميزات الذكاء الاصطناعي
+  const [summary, setSummary] = useState('');
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [quickReplies, setQuickReplies] = useState<string[]>([]);
+  const [transcriptions, setTranscriptions] = useState<Record<string, string>>({});
+  const [isTranscribing, setIsTranscribing] = useState<Record<string, boolean>>({});
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -71,6 +79,19 @@ export default function ChatPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // 🤖 🆕 مراقبة المحادثة لتوليد الردود السريعة
+  useEffect(() => {
+    if (messages.length > 0 && activeChat) {
+      const lastMsg = messages[messages.length - 1];
+      // إذا كانت آخر رسالة من شخص آخر ونوعها نص، نطلب ردود سريعة
+      if (lastMsg.senderId !== currentUser?.id && lastMsg.type === 'TEXT') {
+        fetchQuickReplies(lastMsg.content);
+      } else {
+        setQuickReplies([]); // إخفاء الردود
+      }
+    }
+  }, [messages, activeChat]);
 
   useEffect(() => {
     socket.on('receive_message', (newMsg: any) => {
@@ -179,29 +200,32 @@ export default function ChatPage() {
   const handleSelectChat = (chat: any) => {
     setActiveChat(chat);
     setShowGroupSettings(false); 
+    setSummary(''); 
+    setQuickReplies([]); // تصفير الردود السريعة
     if (!chat.isGroup) {
       setFriends((prev) => prev.map(f => f.id === chat.id ? { ...f, hasUnread: false } : f));
     }
     fetchMessages(chat);
   };
 
-  // إرسال رسالة نصية عادية
-  const handleSendMessage = async () => {
-    if (!message.trim() || !activeChat || !conversationId) return;
+  // 🤖 🆕 تعديل دالة الإرسال لتقبل النص القادم من الردود السريعة
+  const handleSendMessage = async (textToSend: string = message) => {
+    if (!textToSend.trim() || !activeChat || !conversationId) return;
 
     const msgData = {
       conversationId,
       senderId: currentUser.id,
-      content: message,
+      content: textToSend,
       type: 'TEXT'
     };
 
     setMessages((prev) => [...prev, { ...msgData, id: `temp-${Date.now()}` }]);
     socket.emit('send_message', msgData);
-    setMessage('');
+    
+    if (textToSend === message) setMessage('');
+    setQuickReplies([]); // إخفاء الاقتراحات بعد الإرسال
   };
 
-  // 🆕 دالة رفع الملفات (صور/ملفات)
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !activeChat || !conversationId) return;
@@ -236,11 +260,10 @@ export default function ChatPage() {
       alert('Failed to upload file');
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = ''; // تصفير الـ input
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  // 🆕 دالة تشغيل وإيقاف تسجيل الصوت החقيقية (المعدلة والمضمونة)
   const toggleRecording = async () => {
     if (isRecording) {
       mediaRecorderRef.current?.stop();
@@ -249,7 +272,6 @@ export default function ChatPage() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         
-        // فحص أفضل صيغة صوت يدعمها المتصفح تبعك
         const mimeType = MediaRecorder.isTypeSupported('audio/webm') 
           ? 'audio/webm' 
           : 'audio/mp4'; 
@@ -266,15 +288,13 @@ export default function ChatPage() {
 
         mediaRecorder.onstop = async () => {
           const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-          stream.getTracks().forEach(track => track.stop()); // إيقاف إضاءة المايكروفون
+          stream.getTracks().forEach(track => track.stop());
 
-          // حماية: إذا اليوزر كبس بسرعة وما لحق يسجل اشي
           if (audioBlob.size === 0) return; 
 
           setIsUploading(true);
           const formData = new FormData();
           
-          // تحديد الامتداد بشكل ديناميكي حسب دعم المتصفح
           const extension = mimeType.includes('mp4') ? 'm4a' : 'webm';
           formData.append('file', audioBlob, `voice-message.${extension}`);
 
@@ -287,7 +307,7 @@ export default function ChatPage() {
               conversationId,
               senderId: currentUser.id,
               content: 'Voice Message',
-              type: 'AUDIO', // تأكيد النوع للباك إند
+              type: 'AUDIO',
               fileUrl: res.data.fileUrl,
               fileName: `voice-message.${extension}`
             };
@@ -302,7 +322,6 @@ export default function ChatPage() {
           }
         };
 
-        // تقطيع الصوت كل 250 ملي ثانية عشان المتصفح ما يعلق أو يرسل ملف فاضي
         mediaRecorder.start(250); 
         setIsRecording(true);
       } catch (err) {
@@ -312,7 +331,6 @@ export default function ChatPage() {
     }
   };
 
-  // ... (باقي دوال إضافة الأصدقاء والجروبات)
   const handleAddFriend = async (usernameToAdd?: string) => {
     const targetName = usernameToAdd || newFriendName;
     if (!targetName.trim()) return;
@@ -404,6 +422,60 @@ export default function ChatPage() {
       setFriendRequests((prev) => prev.filter((req) => req.id !== id));
     } catch (error) {
       console.error('Error rejecting request', error);
+    }
+  };
+
+  // 🤖 دالة جلب التلخيص
+  const handleSummarize = async () => {
+    if (!conversationId) return;
+    setIsSummarizing(true);
+    try {
+      const res = await axiosClient.get(`/chats/${conversationId}/summary?limit=40`);
+      if (res.data.success) {
+        setSummary(res.data.summary);
+      }
+    } catch (error: any) {
+      console.error("Error fetching summary:", error);
+      alert(error.response?.data?.error || "عذراً، فشل جلب التلخيص.");
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  // 🤖 🆕 دالة استدعاء الردود السريعة
+  const fetchQuickReplies = async (msgText: string) => {
+    try {
+      const res = await axiosClient.post('/chats/quick-replies', { message: msgText });
+      if (res.data.success && Array.isArray(res.data.replies)) {
+        setQuickReplies(res.data.replies);
+      }
+    } catch (error) {
+      console.error('Error fetching quick replies:', error);
+    }
+  };
+
+  // 🤖 🆕 دالة تفريغ الصوت وتحويله لنص
+  const handleTranscribe = async (msgId: string, fileUrl: string) => {
+    setIsTranscribing(prev => ({ ...prev, [msgId]: true }));
+    try {
+      const response = await fetch(fileUrl);
+      const blob = await response.blob();
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      reader.onloadend = async () => {
+        const base64data = (reader.result as string).split(',')[1];
+        const mimeType = blob.type || 'audio/webm';
+
+        const res = await axiosClient.post('/chats/transcribe', { audioBase64: base64data, mimeType });
+        if (res.data.success) {
+          setTranscriptions(prev => ({ ...prev, [msgId]: res.data.text }));
+        }
+      };
+    } catch (error) {
+      console.error("Transcription error:", error);
+      alert('فشل في تفريغ المقطع الصوتي');
+    } finally {
+      setIsTranscribing(prev => ({ ...prev, [msgId]: false }));
     }
   };
 
@@ -507,7 +579,28 @@ export default function ChatPage() {
             )}
           </div>
 
-          <div style={{ display: 'flex', gap: '10px', position: 'relative' }}>
+          <div style={{ display: 'flex', gap: '10px', position: 'relative', alignItems: 'center' }}>
+            
+            {activeChat && (
+              <button 
+                onClick={handleSummarize} 
+                disabled={isSummarizing || messages.length === 0}
+                style={{ 
+                  backgroundColor: '#ffc107', 
+                  color: '#000', 
+                  border: 'none', 
+                  borderRadius: '20px', 
+                  padding: '6px 15px', 
+                  fontSize: '13px', 
+                  cursor: (isSummarizing || messages.length === 0) ? 'not-allowed' : 'pointer', 
+                  fontWeight: 'bold',
+                  boxShadow: '0 2px 5px rgba(0,0,0,0.1)'
+                }}
+              >
+                {isSummarizing ? '⏳ Summarizing...' : '✨ Summarize'}
+              </button>
+            )}
+
             {activeChat && !activeChat.isGroup && (
               <button onClick={() => handleToggleBlock(activeChat.id)} style={{ backgroundColor: blockedByMe.includes(activeChat.id) ? '#28a745' : '#dc3545', color: 'white', border: 'none', borderRadius: '4px', padding: '6px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 'bold' }}>
                 {blockedByMe.includes(activeChat.id) ? 'Unblock' : 'Block'}
@@ -651,7 +744,6 @@ export default function ChatPage() {
                       <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#007bff', marginBottom: '3px' }}>{senderName}</span>
                     )}
                     
-                    {/* 🆕 فحص نوع الرسالة وعرضها بناءً عليه */}
                     {msg.type === 'IMAGE' ? (
                       <div>
                         <img src={msg.fileUrl} alt="attachment" style={{ maxWidth: '100%', borderRadius: '8px', marginTop: '5px' }} />
@@ -659,7 +751,24 @@ export default function ChatPage() {
                       </div>
                     ) : msg.type === 'AUDIO' ? (
                       <div style={{ marginTop: '5px', minWidth: '250px' }}>
-                        <audio controls src={msg.fileUrl} style={{ width: '250px', height: '45px', outline: 'none' }} />
+                        {/* 🤖 🆕 واجهة المقطع الصوتي مع زر التفريغ */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <audio controls src={msg.fileUrl} style={{ width: '220px', height: '45px', outline: 'none' }} />
+                          <button 
+                            onClick={() => handleTranscribe(msg.id, msg.fileUrl)}
+                            disabled={isTranscribing[msg.id]}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', filter: isTranscribing[msg.id] ? 'grayscale(100%)' : 'none' }}
+                            title="تفريغ الصوت لنص"
+                          >
+                            {isTranscribing[msg.id] ? '⏳' : '🪄'}
+                          </button>
+                        </div>
+                        {/* 🤖 🆕 عرض النص المفرغ إذا كان موجود */}
+                        {transcriptions[msg.id] && (
+                          <div dir="auto" style={{ marginTop: '8px', padding: '8px', backgroundColor: msg.senderId === currentUser.id ? 'rgba(255,255,255,0.6)' : '#f8f9fa', borderRadius: '8px', fontSize: '13px', fontStyle: 'italic', color: '#333', textAlign: 'start' }}>
+                            📝 {transcriptions[msg.id]}
+                          </div>
+                        )}
                       </div>
                     ) : msg.type === 'FILE' ? (
                       <div style={{ marginTop: '5px' }}>
@@ -668,7 +777,7 @@ export default function ChatPage() {
                         </a>
                       </div>
                     ) : (
-                      <p style={{ margin: 0 }}>{contentText}</p>
+                      <p style={{ margin: 0 }} dir="auto">{contentText}</p>
                     )}
                   </div>
                 </div>
@@ -678,11 +787,27 @@ export default function ChatPage() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* 🆕 شريط الإدخال الجديد (أزرار الصوت والمرفقات) */}
+        {/* 🤖 🆕 شريط الردود السريعة (يظهر فقط إذا كان هناك اقتراحات) */}
+        {quickReplies.length > 0 && activeChat && (
+          <div style={{ display: 'flex', gap: '10px', padding: '10px 20px', backgroundColor: '#e5ddd5', overflowX: 'auto', scrollbarWidth: 'none' }}>
+            {quickReplies.map((reply, idx) => (
+              <button
+                key={idx}
+                onClick={() => {
+                  handleSendMessage(reply);
+                }}
+                style={{ backgroundColor: 'white', border: '1px solid #007bff', color: '#007bff', borderRadius: '20px', padding: '6px 15px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', whiteSpace: 'nowrap', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}
+              >
+                {reply}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* شريط الإدخال */}
         {activeChat && (
           <div style={{ padding: '15px', backgroundColor: '#f0f0f0', display: 'flex', gap: '10px', alignItems: 'center', borderTop: '1px solid #ddd' }}>
             
-            {/* Input مخفي عشان نرفع من خلاله */}
             <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} accept="image/*,audio/*,video/*,application/pdf,.doc,.docx" />
 
             <button 
@@ -714,12 +839,12 @@ export default function ChatPage() {
               disabled={isUploading || (!activeChat.isGroup && blockedByMe.includes(activeChat.id))}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+              onKeyDown={(e) => e.key === 'Enter' && handleSendMessage(message)}
               style={{ flex: 1, padding: '12px', borderRadius: '25px', border: '1px solid #ccc', outline: 'none', backgroundColor: !activeChat.isGroup && blockedByMe.includes(activeChat.id) ? '#e9ecef' : 'white', color: '#000' }}
             />
             
             <button 
-              onClick={handleSendMessage}
+              onClick={() => handleSendMessage(message)}
               disabled={isUploading || (!activeChat.isGroup && blockedByMe.includes(activeChat.id))}
               style={{ padding: '0 25px', height: '40px', borderRadius: '25px', border: 'none', backgroundColor: !activeChat.isGroup && blockedByMe.includes(activeChat.id) ? '#ccc' : '#007bff', color: 'white', fontWeight: 'bold', cursor: !activeChat.isGroup && blockedByMe.includes(activeChat.id) ? 'not-allowed' : 'pointer' }}
             >
@@ -729,6 +854,40 @@ export default function ChatPage() {
         )}
 
       </div>
+
+      {/* 🤖 🆕 النافذة المنبثقة (Modal) لعرض التلخيص */}
+      {summary && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div style={{ backgroundColor: 'white', padding: '25px', borderRadius: '15px', width: '90%', maxWidth: '600px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
+            
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '15px', marginBottom: '15px' }}>
+              <h3 style={{ margin: 0, color: '#007bff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                ✨ AI Chat Summary
+              </h3>
+              <button 
+                onClick={() => setSummary('')} 
+                style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: '#888' }}
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div dir="auto" style={{ overflowY: 'auto', flex: 1, lineHeight: '1.8', fontSize: '15px', color: '#333', paddingRight: '10px', textAlign: 'start' }}>
+              <ReactMarkdown>{summary}</ReactMarkdown>
+            </div>
+            
+            <div style={{ borderTop: '1px solid #eee', paddingTop: '15px', marginTop: '15px', textAlign: 'right' }}>
+              <button 
+                onClick={() => setSummary('')} 
+                style={{ backgroundColor: '#f8f9fa', border: '1px solid #ddd', padding: '8px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', color: '#555' }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
